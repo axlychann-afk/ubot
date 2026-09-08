@@ -42,16 +42,34 @@ async function reply(msg, text) {
   await client.sendMessage(msg.chatId, { message: text, replyTo: msg.id });
 }
 
-// ---- Broadcast (terbuka, anti-limit) ----
-// Daftar grup dibaca live dari dialog akun (bukan file aneh-aneh).
-// Block list disimpan lokal di bcblock.txt (id per baris).
+// ---- Broadcast ALLOWLIST (sunyi, anti-limit) ----
+// Default: TIDAK ADA grup yang kena siaran. Allow dulu baru kena.
+// - Di grup: ketik /start atau .allow (dari akun sendiri) -> grup masuk allowlist,
+//   pesan perintahnya DIHAPUS biar tidak ketahuan ubot. Tanpa teks balasan di grup.
+// - .gclist (di Saved Messages) -> daftar + nomor, dipecah per 10 biar tidak MESSAGE_TOO_LONG.
+// - .bc -> cuma kirim ke yang di-allow. .deny <nomor> buat cabut.
+// Allow list disimpan lokal di allow.txt (id per baris).
 import { writeFileSync as _w, readFileSync as _r, existsSync as _e } from 'node:fs';
 
-function blockedIds() {
+function allowIds() {
   try {
-    if (!_e('./bcblock.txt')) return new Set();
-    return new Set(_r('./bcblock.txt', 'utf8').split('\n').map((s) => s.trim()).filter(Boolean));
+    if (!_e('./allow.txt')) return new Set();
+    return new Set(_r('./allow.txt', 'utf8').split('\n').map((s) => s.trim()).filter(Boolean));
   } catch { return new Set(); }
+}
+function saveAllow(set) {
+  _w('./allow.txt', [...set].join('\n'));
+}
+
+// Kirim teks panjang dengan cara dipecah per 3500 karakter (batas aman Telegram).
+async function sendLong(chatId, text, replyTo) {
+  const chunks = text.match(/[\s\S]{1,3500}/g) || [text];
+  let first = null;
+  for (const c of chunks) {
+    first = await client.sendMessage(chatId, { message: c, replyTo: replyTo && !first ? replyTo : undefined });
+    if (chunks.length > 1) await sleep(800);
+  }
+  return first;
 }
 
 async function myGroups() {
@@ -64,31 +82,50 @@ async function myGroups() {
 }
 
 async function handleBroadcast(cmd, arg, msg) {
+  if (cmd === 'denyall' || cmd === 'blockall') {
+    saveAllow(new Set());
+    await reply(msg, '⛔ allowlist dikosongkan. Target bc = 0 grup.');
+    return;
+  }
   if (cmd === 'gclist') {
     const groups = await myGroups();
-    const blocked = blockedIds();
+    const allowed = allowIds();
     if (!groups.length) { await reply(msg, 'belum join grup/channel apa pun.'); return; }
-    const lines = groups.map((g, i) => `${i + 1}. ${g.title}${blocked.has(g.id) ? ' [⛔blocked]' : ''}`);
-    await reply(msg, `daftar grup (${groups.length}):\n${lines.join('\n')}\n\nblock: .bcblock <nomor>\nbuka: .bcunblock <nomor>`);
-    return;
-  }
-  if (cmd === 'bcblock' || cmd === 'bcunblock') {
-    const groups = await myGroups();
-    const nums = arg.split(/\s+/).map(Number).filter((n) => n >= 1 && n <= groups.length);
-    if (!nums.length) { await reply(msg, `pakai: .${cmd} <nomor>\nlihat nomor di .gclist`); return; }
-    const blocked = blockedIds();
-    for (const n of nums) {
-      if (cmd === 'bcblock') blocked.add(groups[n - 1].id);
-      else blocked.delete(groups[n - 1].id);
+    const head = `daftar grup (${groups.length}, di-allow ${groups.filter((g) => allowed.has(g.id)).length}):\n`;
+    const lines = groups.map((g, i) => `${i + 1}. ${g.title}${allowed.has(g.id) ? ' [✅allow]' : ''}`);
+    // pecah per 10 baris biar tidak MESSAGE_TOO_LONG
+    await sendLong(msg.chatId, `${head}\nallow: .allow <nomor> / ketik /start di grup\ncabut: .deny <nomor>`);
+    for (let i = 0; i < lines.length; i += 10) {
+      await sendLong(msg.chatId, lines.slice(i, i + 10).join('\n'));
+      await sleep(800);
     }
-    _w('./bcblock.txt', [...blocked].join('\n'));
-    await reply(msg, `${cmd === 'bcblock' ? '⛔ di-block' : '✅ dibuka'}: ${nums.join(', ')}`);
     return;
   }
-  // .bc <teks> — kalau sambil reply media, media ikut diteruskan + caption
+  if (cmd === 'allow' || cmd === 'bcblock' || cmd === 'bcunblock' || cmd === 'deny') {
+    const groups = await myGroups();
+    // .allow tanpa nomor DI DALAM grup = allow grup ini
+    if ((cmd === 'allow') && !arg && msg.chatId) {
+      const allowed = allowIds();
+      allowed.add(String(msg.chatId));
+      saveAllow(allowed);
+      try { await msg.delete(); } catch {}
+      return;
+    }
+    const nums = arg.split(/\s+/).map(Number).filter((n) => n >= 1 && n <= groups.length);
+    if (!nums.length) { await reply(msg, `pakai: .allow <nomor> / .deny <nomor>\nlihat nomor di .gclist`); return; }
+    const allowed = allowIds();
+    for (const n of nums) {
+      if (cmd === 'allow' || cmd === 'bcblock') allowed.add(groups[n - 1].id);
+      else allowed.delete(groups[n - 1].id);
+    }
+    saveAllow(allowed);
+    await reply(msg, `${(cmd === 'allow' || cmd === 'bcblock') ? '✅ di-allow' : '⛔ dicabut'}: ${nums.join(', ')}`);
+    return;
+  }
+  // .bc <teks> — HANYA ke grup yang di-allow. Kalau reply media, media ikut + caption.
   if (!arg && !msg.replyToMsgId) { await reply(msg, 'pakai: .bc <teks promosi>\natau reply foto/video lalu .bc <caption>'); return; }
-  const groups = (await myGroups()).filter((g) => !blockedIds().has(g.id));
-  if (!groups.length) { await reply(msg, 'tidak ada target (semua di-block / belum join grup).'); return; }
+  const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
+  if (!groups.length) { await reply(msg, 'belum ada grup di-allow.\nKetik /start di grup target (sunyi, otomatis masuk list), atau .allow <nomor>.'); return; }
   let fwd = null;
   if (msg.replyToMsgId) {
     try { fwd = await msg.getReplyMessage(); } catch {}
@@ -117,6 +154,16 @@ client.addEventHandler(async (event) => {
   const msg = event.message;
   if (!msg || msg.out !== true) return; // cuma respon perintah dari akun sendiri
   const text = (msg.text || '').trim();
+  // /start dari akun sendiri DI DALAM grup = allow sunyi (pesan dihapus, tanpa balasan)
+  if (text === '/start' && msg.chatId) {
+    try {
+      const allowed = allowIds();
+      allowed.add(String(msg.chatId));
+      saveAllow(allowed);
+    } catch {}
+    try { await msg.delete(); } catch {}
+    return;
+  }
   if (!text.startsWith(PREFIX)) return;
   const [cmd, ...rest] = text.slice(PREFIX.length).split(/\s+/);
   const arg = rest.join(' ');
@@ -133,8 +180,10 @@ client.addEventHandler(async (event) => {
       '.info — info akun\n' +
       '.join <link/@grup> — masuk grup\n' +
       '.leave — keluar dari grup ini\n' +
-      '.gclist — daftar grup + nomor\n' +
-      '.bc <teks> — broadcast ke semua grup (ada jeda anti-limit)\n' +
+      '.gclist — daftar grup + nomor (dipecah, anti MESSAGE_TOO_LONG)\n' +
+      '.allow <nomor> / .deny <nomor> — atur target (atau /start di grup, sunyi)\n' +
+      '.denyall — kosongkan allowlist (target = 0)\n' +
+      '.bc <teks> — broadcast HANYA ke yang di-allow\n' +
       '.tagall [teks] — tag semua member (grup kecil, ada jeda)');
   } else if (cmd === 'id') {
     const me = await client.getMe();
@@ -152,7 +201,7 @@ client.addEventHandler(async (event) => {
     try {
       await client.invoke(new (await import('telegram/tl/index.js')).Api.channels.LeaveChannel({ channel: msg.chatId }));
     } catch (e) { await reply(msg, `gagal leave: ${e.message}`); }
-  } else if (cmd === 'gclist' || cmd === 'bcblock' || cmd === 'bcunblock' || cmd === 'bc') {
+  } else if (cmd === 'gclist' || cmd === 'allow' || cmd === 'deny' || cmd === 'denyall' || cmd === 'blockall' || cmd === 'bcblock' || cmd === 'bcunblock' || cmd === 'bc') {
     await handleBroadcast(cmd, arg, msg);
   } else if (cmd === 'tagall') {
     if (!msg.chatId) { await reply(msg, 'cuma bisa di grup.'); return; }
