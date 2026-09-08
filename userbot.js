@@ -172,4 +172,4 @@ client.addEventHandler(async (event) => {
 }, new NewMessage({}));
 
 console.log('ubot-bersih jalan. Ketik .help di Saved Messages.');
-await client.runUntilDisconnected();
+await new Promise(() => {}); // tahan proses tetap hidup (GramJS tidak punya runUntilDisconnected)
