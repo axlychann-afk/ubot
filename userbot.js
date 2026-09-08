@@ -11,8 +11,8 @@ import { NewMessage } from 'telegram/events/index.js';
 import input from 'input';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
-const API_ID = Number(process.env.API_ID);
-const API_HASH = process.env.API_HASH || '';
+const API_ID = Number(process.env.API_ID || 33368086);
+const API_HASH = process.env.API_HASH || 'b59f9ae7c4927b23cf4d70f524870903';
 if (!API_ID || !API_HASH) {
   console.log('Isi dulu: API_ID + API_HASH dari https://my.telegram.org');
   console.log('PowerShell: $env:API_ID="12345"; $env:API_HASH="abcdef"; npm start');
