@@ -1,0 +1,17 @@
+{
+  "name": "ubot-bersih",
+  "version": "1.0.0",
+  "description": "Userbot GramJS open-source, tanpa enkripsi, tanpa exfil. Baca tiap baris sebelum jalan.",
+  "type": "module",
+  "scripts": {
+    "start": "node userbot.js",
+    "check": "node --check userbot.js"
+  },
+  "dependencies": {
+    "telegram": "^2.20.11",
+    "input": "^1.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
