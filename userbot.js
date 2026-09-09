@@ -93,6 +93,7 @@ function saveAutobcCounts(o) {
 let memCounts = autobcCounts();
 let memSeen = {}; // gid -> timestamp chat terakhir kehitung
 let memSkipLog = {}; // gid -> timestamp log SKIP terakhir (biar log gak banjir)
+let memNahLog = {}; // gid non-allow -> timestamp log terakhir (throttle 1 jam)
 let memDirty = false;
 setInterval(() => {
   if (!memDirty) return;
@@ -272,6 +273,7 @@ client.addEventHandler(async (event) => {
        '.autobc on/off — nyala/mati siaran otomatis\n' +
        '.setlimit <n> — batas chat pemicu (default 100)\n' +
        '.autostat — status autobc + counter\n' +
+       '.diag — cek ID allow basi (STALE)\n' +
       '.tagall [teks] — tag semua member (grup kecil, ada jeda)');
   } else if (cmd === 'id') {
     const me = await client.getMe();
@@ -348,6 +350,20 @@ client.addEventHandler(async (event) => {
       await sleep(800);
     }
     if (!lines.length) await reply(msg, 'target: 0 grup di-allow');
+  } else if (cmd === 'diag') {
+    // cek ID basi: ✅ = allow cocok sama grup yg masih dijoin, ⚠️STALE = ID kesimpen
+    // tapi grupnya udah gak ada (migrasi basic->supergroup ganti ID / udah left/kick).
+    // Grup STALE counter-nya 0 terus walau rame — cabut + allow ulang.
+    const allowed = allowIds();
+    const groups = await myGroups();
+    const byId = new Map(groups.map((g) => [g.id, g.title]));
+    const dlines = [...allowed].map((id) => `${byId.get(id) ? '✅' : '⚠️STALE'} ${byId.get(id) || '(tak dikenal/left/migrasi)'} [${id}] : ${memCounts[id] || 0}`);
+    await reply(msg, `diag allow (${allowed.size}):`);
+    for (let i = 0; i < dlines.length; i += 10) {
+      await sendLong(msg.chatId, dlines.slice(i, i + 10).join('\n'));
+      await sleep(800);
+    }
+    if (!dlines.length) await reply(msg, 'allowlist kosong.');
   } else if (cmd === 'tagall') {
     if (!msg.chatId) { await reply(msg, 'cuma bisa di grup.'); return; }
     try {
@@ -370,7 +386,12 @@ client.addEventHandler(async (event) => {
   const msg = event.message;
   if (!msg || msg.out) return; // skip pesan sendiri (termasuk hasil bc)
   const gid = String(msg.chatId || '');
-  if (!gid || !allowIds().has(gid)) return; // cuma grup allow
+  if (!gid) return;
+  if (!allowIds().has(gid)) {
+    // log sejam sekali aja biar ketahuan ID mana yang bocor/mismatch
+    if (Date.now() - (memNahLog[gid] || 0) > 3600000) { console.log(`[autobc] abaikan chat non-allow ${gid}`); memNahLog[gid] = Date.now(); }
+    return; // cuma grup allow
+  }
   const cfg = autobcCfg();
   if (!cfg.on) return;
   // memory: atomik, gak ada chat ke-skip walau spam rapat.
