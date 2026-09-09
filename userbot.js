@@ -111,7 +111,7 @@ function getPromo() {
 }
 
 const AUTOBC_COOLDOWN = 5 * 60 * 1000; // dipakai buat throttle log SKIP
-const AUTOBC_GROUP_CD = 5 * 60 * 1000; // cooldown PER GRUP: grup yg sama nembak max 1x/5 mnt
+const AUTOBC_GROUP_CD = 1 * 60 * 1000; // cooldown PER GRUP: grup yg sama nembak max 1x/1 mnt
 const AUTOBC_FLOOR = 30 * 1000; // jeda GLOBAL antar kiriman (anti-burst kena limit Telegram)
 
 async function firePromo(groups, promoText) {
