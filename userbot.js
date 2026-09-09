@@ -92,6 +92,7 @@ function saveAutobcCounts(o) {
 // tiap 15 detik + tiap kali nembak, jadi restart gak bikin ilang banyak.
 let memCounts = autobcCounts();
 let memSeen = {}; // gid -> timestamp chat terakhir kehitung
+let memSkipLog = {}; // gid -> timestamp log SKIP terakhir (biar log gak banjir)
 let memDirty = false;
 setInterval(() => {
   if (!memDirty) return;
@@ -114,9 +115,13 @@ const AUTOBC_COOLDOWN = 5 * 60 * 1000; // 5 menit antar siaran otomatis
 async function firePromo(groups, promoText) {
   let ok = 0, fail = 0;
   const hasMedia = _e('./promo_media');
+  const CAP = 1024; // batas caption Telegram — sisa teks dikirim nyusul biar gak MESSAGE_TOO_LONG
   for (const g of groups) {
     try {
-      if (hasMedia) await client.sendFile(g.id, { file: './promo_media', caption: promoText });
+      if (hasMedia) {
+        await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP) });
+        if (promoText.length > CAP) await sendLong(g.id, promoText.slice(CAP));
+      }
       else await sendLong(g.id, promoText);
       ok++;
     } catch (e) {
@@ -330,11 +335,17 @@ client.addEventHandler(async (event) => {
       return `${Math.floor(s / 60)} mnt lalu`;
     };
     const lines = groups.map((g) => `${g.title}: ${memCounts[g.id] || 0}/${c.limit} (terakhir ${ago(memSeen[g.id])})`);
+    // header pendek via reply, daftar grup dipecah per 10 via sendLong
+    // (reply langsung daftar panjang = MESSAGE_TOO_LONG = crash)
     await reply(msg,
       `autobc: ${c.on ? 'NYALA ✅' : 'MATI ⛔'}\n` +
       `limit: ${c.limit} chat/grup\n` +
-      `promo: ${getPromo() ? getPromo().length + ' char' : '-'}${_e('./promo_media') ? ' + media' : ''}\n` +
-      (lines.length ? '\n' + lines.join('\n') : '\ntarget: 0 grup di-allow'));
+      `promo: ${getPromo() ? getPromo().length + ' char' : '-'}${_e('./promo_media') ? ' + media' : ''}`);
+    for (let i = 0; i < lines.length; i += 10) {
+      await sendLong(msg.chatId, lines.slice(i, i + 10).join('\n'));
+      await sleep(800);
+    }
+    if (!lines.length) await reply(msg, 'target: 0 grup di-allow');
   } else if (cmd === 'tagall') {
     if (!msg.chatId) { await reply(msg, 'cuma bisa di grup.'); return; }
     try {
@@ -360,16 +371,17 @@ client.addEventHandler(async (event) => {
   if (!gid || !allowIds().has(gid)) return; // cuma grup allow
   const cfg = autobcCfg();
   if (!cfg.on) return;
-  // memory: atomik, gak ada chat ke-skip walau spam rapat
-  memCounts[gid] = (Number(memCounts[gid]) || 0) + 1;
+  // memory: atomik, gak ada chat ke-skip walau spam rapat.
+  // counter DIJEPIT di limit — pas cooldown gak balon (127/35) & log gak banjir.
+  memCounts[gid] = Math.min((Number(memCounts[gid]) || 0) + 1, cfg.limit);
   memSeen[gid] = Date.now();
   memDirty = true;
   if (memCounts[gid] < cfg.limit) return;
-  console.log(`[autobc] ${gid} nyentuh limit (${memCounts[gid]}/${cfg.limit})`);
-  // nyentuh limit — cek promo + cooldown
   const promo = getPromo();
-  if (!promo && !_e('./promo_media')) { console.log('[autobc] SKIP: promo kosong, set via .setpromo dulu'); return; }
-  if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) { console.log('[autobc] SKIP: masih cooldown 5 menit'); return; }
+  const mayLog = (Date.now() - (memSkipLog[gid] || 0)) > AUTOBC_COOLDOWN;
+  if (!promo && !_e('./promo_media')) { if (mayLog) { console.log('[autobc] SKIP: promo kosong, set via .setpromo dulu'); memSkipLog[gid] = Date.now(); } return; }
+  if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) { if (mayLog) { console.log(`[autobc] SKIP cooldown, ${gid} nunggu di ${cfg.limit}/${cfg.limit}`); memSkipLog[gid] = Date.now(); } return; }
+  console.log(`[autobc] ${gid} nyentuh limit (${cfg.limit}/${cfg.limit})`);
   memCounts[gid] = 0; // reset pemicu biar ngitung ulang
   cfg.lastBc = Date.now(); saveAutobcCfg(cfg);
   flushCounts();
