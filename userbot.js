@@ -87,6 +87,21 @@ function autobcCounts() {
 function saveAutobcCounts(o) {
   _w('./autobc_count.json', JSON.stringify(o));
 }
+// Counter di MEMORY (bukan baca-tulis file tiap chat) — tiap chat masuk
+// diproses atomik, gak ada yang ke-skip walau spam rapat. Flush ke disk
+// tiap 15 detik + tiap kali nembak, jadi restart gak bikin ilang banyak.
+let memCounts = autobcCounts();
+let memSeen = {}; // gid -> timestamp chat terakhir kehitung
+let memDirty = false;
+setInterval(() => {
+  if (!memDirty) return;
+  try { saveAutobcCounts(memCounts); memDirty = false; } catch {}
+}, 15000);
+function flushCounts() {
+  try { saveAutobcCounts(memCounts); memDirty = false; } catch {}
+}
+process.on('SIGINT', () => { flushCounts(); process.exit(0); });
+process.on('SIGTERM', () => { flushCounts(); process.exit(0); });
 function getPromo() {
   try {
     if (!_e('./promo.txt')) return '';
@@ -307,9 +322,14 @@ client.addEventHandler(async (event) => {
     await reply(msg, `limit autobc = ${c.limit} chat/grup.`);
   } else if (cmd === 'autostat') {
     const c = autobcCfg();
-    const counts = autobcCounts();
     const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
-    const lines = groups.map((g) => `${g.title}: ${counts[g.id] || 0}/${c.limit}`);
+    const ago = (t) => {
+      if (!t) return 'belum ada chat kehitung';
+      const s = Math.floor((Date.now() - t) / 1000);
+      if (s < 60) return `${s} dtk lalu`;
+      return `${Math.floor(s / 60)} mnt lalu`;
+    };
+    const lines = groups.map((g) => `${g.title}: ${memCounts[g.id] || 0}/${c.limit} (terakhir ${ago(memSeen[g.id])})`);
     await reply(msg,
       `autobc: ${c.on ? 'NYALA ✅' : 'MATI ⛔'}\n` +
       `limit: ${c.limit} chat/grup\n` +
@@ -340,17 +360,21 @@ client.addEventHandler(async (event) => {
   if (!gid || !allowIds().has(gid)) return; // cuma grup allow
   const cfg = autobcCfg();
   if (!cfg.on) return;
-  const counts = autobcCounts();
-  counts[gid] = (Number(counts[gid]) || 0) + 1;
-  saveAutobcCounts(counts);
-  if (counts[gid] < cfg.limit) return;
+  // memory: atomik, gak ada chat ke-skip walau spam rapat
+  memCounts[gid] = (Number(memCounts[gid]) || 0) + 1;
+  memSeen[gid] = Date.now();
+  memDirty = true;
+  if (memCounts[gid] < cfg.limit) return;
+  console.log(`[autobc] ${gid} nyentuh limit (${memCounts[gid]}/${cfg.limit})`);
   // nyentuh limit — cek promo + cooldown
   const promo = getPromo();
-  if (!promo && !_e('./promo_media')) return;
-  if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) return;
-  counts[gid] = 0; saveAutobcCounts(counts); // reset pemicu biar ngitung ulang
+  if (!promo && !_e('./promo_media')) { console.log('[autobc] SKIP: promo kosong, set via .setpromo dulu'); return; }
+  if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) { console.log('[autobc] SKIP: masih cooldown 5 menit'); return; }
+  memCounts[gid] = 0; // reset pemicu biar ngitung ulang
   cfg.lastBc = Date.now(); saveAutobcCfg(cfg);
+  flushCounts();
   // CUMA grup pemicu yang dikirimi — grup lain gak diganggu.
+  console.log(`[autobc] kirim promo ke ${gid}`);
   await firePromo([{ id: gid }], promo);
 }, new NewMessage({ incoming: true }));
 
