@@ -385,7 +385,7 @@ client.addEventHandler(async (event) => {
   // TANPA cooldown / jeda: nyentuh limit langsung nembak detik itu juga.
   console.log(`[autobc] ${gid} nyentuh limit (${cfg.limit}/${cfg.limit})`);
   memCounts[gid] = 0; // reset pemicu biar ngitung ulang
-  cfg.lastBc = now; cfg.lastFire[gid] = now; saveAutobcCfg(cfg);
+  cfg.lastBc = Date.now(); cfg.lastFire = cfg.lastFire || {}; cfg.lastFire[gid] = Date.now(); saveAutobcCfg(cfg);
   flushCounts();
   // CUMA grup pemicu yang dikirimi — grup lain gak diganggu.
   console.log(`[autobc] kirim promo ke ${gid}`);
