@@ -72,7 +72,7 @@ function autobcCfg() {
   try {
     if (!_e('./autobc.json')) return { on: false, limit: 100, lastBc: 0 };
     const c = JSON.parse(_r('./autobc.json', 'utf8'));
-    return { on: !!c.on, limit: Number(c.limit) >= 10 ? Number(c.limit) : 100, lastBc: Number(c.lastBc) || 0 };
+    return { on: !!c.on, limit: Number(c.limit) >= 10 ? Number(c.limit) : 100, lastBc: Number(c.lastBc) || 0, lastFire: c.lastFire || {} };
   } catch { return { on: false, limit: 100, lastBc: 0 }; }
 }
 function saveAutobcCfg(c) {
@@ -110,7 +110,9 @@ function getPromo() {
   } catch { return ''; }
 }
 
-const AUTOBC_COOLDOWN = 5 * 60 * 1000; // 5 menit antar siaran otomatis
+const AUTOBC_COOLDOWN = 5 * 60 * 1000; // dipakai buat throttle log SKIP
+const AUTOBC_GROUP_CD = 5 * 60 * 1000; // cooldown PER GRUP: grup yg sama nembak max 1x/5 mnt
+const AUTOBC_FLOOR = 30 * 1000; // jeda GLOBAL antar kiriman (anti-burst kena limit Telegram)
 
 async function firePromo(groups, promoText) {
   let ok = 0, fail = 0;
@@ -379,11 +381,16 @@ client.addEventHandler(async (event) => {
   if (memCounts[gid] < cfg.limit) return;
   const promo = getPromo();
   const mayLog = (Date.now() - (memSkipLog[gid] || 0)) > AUTOBC_COOLDOWN;
+  const now = Date.now();
   if (!promo && !_e('./promo_media')) { if (mayLog) { console.log('[autobc] SKIP: promo kosong, set via .setpromo dulu'); memSkipLog[gid] = Date.now(); } return; }
-  if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) { if (mayLog) { console.log(`[autobc] SKIP cooldown, ${gid} nunggu di ${cfg.limit}/${cfg.limit}`); memSkipLog[gid] = Date.now(); } return; }
+  cfg.lastFire = cfg.lastFire || {};
+  // cooldown PER GRUP dulu (grup ini habis nembak <5 mnt? skip, grup lain tetep bisa nembak)
+  if (now - (Number(cfg.lastFire[gid]) || 0) < AUTOBC_GROUP_CD) { if (mayLog) { console.log(`[autobc] SKIP cooldown grup, ${gid} nunggu di ${cfg.limit}/${cfg.limit}`); memSkipLog[gid] = Date.now(); } return; }
+  // lantai global cuma 30 dtk biar antrean grup lain cepet kekuras
+  if (now - cfg.lastBc < AUTOBC_FLOOR) { if (mayLog) { console.log(`[autobc] SKIP jeda kirim, ${gid} antre di ${cfg.limit}/${cfg.limit}`); memSkipLog[gid] = Date.now(); } return; }
   console.log(`[autobc] ${gid} nyentuh limit (${cfg.limit}/${cfg.limit})`);
   memCounts[gid] = 0; // reset pemicu biar ngitung ulang
-  cfg.lastBc = Date.now(); saveAutobcCfg(cfg);
+  cfg.lastBc = now; cfg.lastFire[gid] = now; saveAutobcCfg(cfg);
   flushCounts();
   // CUMA grup pemicu yang dikirimi — grup lain gak diganggu.
   console.log(`[autobc] kirim promo ke ${gid}`);
