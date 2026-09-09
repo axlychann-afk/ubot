@@ -381,13 +381,8 @@ client.addEventHandler(async (event) => {
   if (memCounts[gid] < cfg.limit) return;
   const promo = getPromo();
   const mayLog = (Date.now() - (memSkipLog[gid] || 0)) > AUTOBC_COOLDOWN;
-  const now = Date.now();
   if (!promo && !_e('./promo_media')) { if (mayLog) { console.log('[autobc] SKIP: promo kosong, set via .setpromo dulu'); memSkipLog[gid] = Date.now(); } return; }
-  cfg.lastFire = cfg.lastFire || {};
-  // cooldown PER GRUP dulu (grup ini habis nembak <5 mnt? skip, grup lain tetep bisa nembak)
-  if (now - (Number(cfg.lastFire[gid]) || 0) < AUTOBC_GROUP_CD) { if (mayLog) { console.log(`[autobc] SKIP cooldown grup, ${gid} nunggu di ${cfg.limit}/${cfg.limit}`); memSkipLog[gid] = Date.now(); } return; }
-  // lantai global cuma 30 dtk biar antrean grup lain cepet kekuras
-  if (now - cfg.lastBc < AUTOBC_FLOOR) { if (mayLog) { console.log(`[autobc] SKIP jeda kirim, ${gid} antre di ${cfg.limit}/${cfg.limit}`); memSkipLog[gid] = Date.now(); } return; }
+  // TANPA cooldown / jeda: nyentuh limit langsung nembak detik itu juga.
   console.log(`[autobc] ${gid} nyentuh limit (${cfg.limit}/${cfg.limit})`);
   memCounts[gid] = 0; // reset pemicu biar ngitung ulang
   cfg.lastBc = now; cfg.lastFire[gid] = now; saveAutobcCfg(cfg);
