@@ -61,6 +61,61 @@ function saveAllow(set) {
   _w('./allow.txt', [...set].join('\n'));
 }
 
+// ---- AUTOBC (siaran otomatis tiap N chat masuk di grup allow) ----
+// - .setpromo <teks> (atau reply pesan/media + .setpromo <caption>) = simpan promo.
+// - .autobc on / off = nyala/mati. .setlimit <angka> = ganti batas (default 100).
+// - .autostat = lihat status + counter per grup.
+// - Tiap chat MASUK (bukan dari akun sendiri) di grup allow dihitung.
+//   Begitu SATU grup nyentuh limit -> promo disebar ke SEMUA grup allow,
+//   counter grup pemicu direset 0. Ada cooldown 5 menit anti-spam.
+function autobcCfg() {
+  try {
+    if (!_e('./autobc.json')) return { on: false, limit: 100, lastBc: 0 };
+    const c = JSON.parse(_r('./autobc.json', 'utf8'));
+    return { on: !!c.on, limit: Number(c.limit) >= 10 ? Number(c.limit) : 100, lastBc: Number(c.lastBc) || 0 };
+  } catch { return { on: false, limit: 100, lastBc: 0 }; }
+}
+function saveAutobcCfg(c) {
+  _w('./autobc.json', JSON.stringify(c));
+}
+function autobcCounts() {
+  try {
+    if (!_e('./autobc_count.json')) return {};
+    return JSON.parse(_r('./autobc_count.json', 'utf8'));
+  } catch { return {}; }
+}
+function saveAutobcCounts(o) {
+  _w('./autobc_count.json', JSON.stringify(o));
+}
+function getPromo() {
+  try {
+    if (!_e('./promo.txt')) return '';
+    return _r('./promo.txt', 'utf8');
+  } catch { return ''; }
+}
+
+const AUTOBC_COOLDOWN = 5 * 60 * 1000; // 5 menit antar siaran otomatis
+
+async function firePromo(groups, promoText) {
+  let ok = 0, fail = 0;
+  const hasMedia = _e('./promo_media');
+  for (const g of groups) {
+    try {
+      if (hasMedia) await client.sendFile(g.id, { file: './promo_media', caption: promoText });
+      else await sendLong(g.id, promoText);
+      ok++;
+    } catch (e) {
+      fail++;
+      if (/FLOOD|WAIT/i.test(e.message || '')) {
+        const s = Number((e.message.match(/(\d+)/) || [])[1]) || 30;
+        await sleep(Math.min(s, 60) * 1000);
+      }
+    }
+    await sleep(3000); // jeda anti-limit, jangan dikecilin
+  }
+  return { ok, fail };
+}
+
 // Kirim teks panjang dengan cara dipecah per 3500 karakter (batas aman Telegram).
 async function sendLong(chatId, text, replyTo) {
   const chunks = text.match(/[\s\S]{1,3500}/g) || [text];
@@ -190,7 +245,11 @@ client.addEventHandler(async (event) => {
       '.gclist — daftar grup + nomor (dipecah, anti MESSAGE_TOO_LONG)\n' +
       '.allow <nomor> / .deny <nomor> — atur target (atau /start di grup, sunyi)\n' +
       '.denyall — kosongkan allowlist (target = 0)\n' +
-      '.bc <teks> — broadcast HANYA ke yang di-allow\n' +
+       '.bc <teks> — broadcast HANYA ke yang di-allow\n' +
+       '.setpromo <teks> — simpan teks autobc (atau reply media)\n' +
+       '.autobc on/off — nyala/mati siaran otomatis\n' +
+       '.setlimit <n> — batas chat pemicu (default 100)\n' +
+       '.autostat — status autobc + counter\n' +
       '.tagall [teks] — tag semua member (grup kecil, ada jeda)');
   } else if (cmd === 'id') {
     const me = await client.getMe();
@@ -210,6 +269,52 @@ client.addEventHandler(async (event) => {
     } catch (e) { await reply(msg, `gagal leave: ${e.message}`); }
   } else if (cmd === 'gclist' || cmd === 'allow' || cmd === 'deny' || cmd === 'denyall' || cmd === 'blockall' || cmd === 'bcblock' || cmd === 'bcunblock' || cmd === 'bc') {
     await handleBroadcast(cmd, arg, msg);
+  } else if (cmd === 'setpromo') {
+    // .setpromo <teks> — simpan; kalau reply media, medianya ikut disimpan.
+    let fwd = null;
+    if (msg.replyToMsgId) {
+      try { fwd = await msg.getReplyMessage(); } catch {}
+    }
+    const promoText = arg || (fwd && !fwd.media ? (fwd.text || '') : (fwd && fwd.media ? (fwd.text || '') : ''));
+    if (fwd && fwd.media) {
+      try {
+        const buf = await client.downloadMedia(fwd.media);
+        _w('./promo_media', Buffer.from(buf));
+      } catch (e) { await reply(msg, `gagal simpan media: ${e.message}`); return; }
+    }
+    if (!promoText && !(fwd && fwd.media)) { await reply(msg, 'pakai: .setpromo <teks promosi>\natau reply foto/video lalu .setpromo <caption>'); return; }
+    _w('./promo.txt', promoText);
+    await reply(msg, `promo tersimpan (${promoText.length} char${(fwd && fwd.media) ? ' + media' : ''}).\nNyalakan: .autobc on`);
+  } else if (cmd === 'autobc') {
+    const c = autobcCfg();
+    const v = (arg || '').toLowerCase();
+    if (v === 'on') {
+      const promo = getPromo();
+      if (!promo && !_e('./promo_media')) { await reply(msg, 'set promo dulu: .setpromo <teks>'); return; }
+      c.on = true; saveAutobcCfg(c);
+      await reply(msg, `autobc NYALA. Pemicu: ${c.limit} chat/grup allow.`);
+    } else if (v === 'off') {
+      c.on = false; saveAutobcCfg(c);
+      await reply(msg, 'autobc MATI.');
+    } else {
+      await reply(msg, `pakai: .autobc on / .autobc off\nstatus sekarang: ${c.on ? 'NYALA' : 'MATI'} (limit ${c.limit})`);
+    }
+  } else if (cmd === 'setlimit') {
+    const n = Number(arg);
+    if (!n || n < 10) { await reply(msg, 'pakai: .setlimit <angka, min 10>\ncontoh: .setlimit 100'); return; }
+    const c = autobcCfg();
+    c.limit = Math.floor(n); saveAutobcCfg(c);
+    await reply(msg, `limit autobc = ${c.limit} chat/grup.`);
+  } else if (cmd === 'autostat') {
+    const c = autobcCfg();
+    const counts = autobcCounts();
+    const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
+    const lines = groups.map((g) => `${g.title}: ${counts[g.id] || 0}/${c.limit}`);
+    await reply(msg,
+      `autobc: ${c.on ? 'NYALA ✅' : 'MATI ⛔'}\n` +
+      `limit: ${c.limit} chat/grup\n` +
+      `promo: ${getPromo() ? getPromo().length + ' char' : '-'}${_e('./promo_media') ? ' + media' : ''}\n` +
+      (lines.length ? '\n' + lines.join('\n') : '\ntarget: 0 grup di-allow'));
   } else if (cmd === 'tagall') {
     if (!msg.chatId) { await reply(msg, 'cuma bisa di grup.'); return; }
     try {
@@ -226,6 +331,29 @@ client.addEventHandler(async (event) => {
     } catch (e) { await reply(msg, `gagal tagall: ${e.message}`); }
   }
 }, new NewMessage({}));
+
+// ---- Penghitung chat masuk buat AUTOBC (handler terpisah, cuma yang masuk) ----
+client.addEventHandler(async (event) => {
+  const msg = event.message;
+  if (!msg || msg.out) return; // skip pesan sendiri (termasuk hasil bc)
+  const gid = String(msg.chatId || '');
+  if (!gid || !allowIds().has(gid)) return; // cuma grup allow
+  const cfg = autobcCfg();
+  if (!cfg.on) return;
+  const counts = autobcCounts();
+  counts[gid] = (Number(counts[gid]) || 0) + 1;
+  saveAutobcCounts(counts);
+  if (counts[gid] < cfg.limit) return;
+  // nyentuh limit — cek promo + cooldown
+  const promo = getPromo();
+  if (!promo && !_e('./promo_media')) return;
+  if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) return;
+  counts[gid] = 0; saveAutobcCounts(counts); // reset pemicu biar ngitung ulang
+  cfg.lastBc = Date.now(); saveAutobcCfg(cfg);
+  const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
+  if (!groups.length) return;
+  await firePromo(groups, promo);
+}, new NewMessage({ incoming: true }));
 
 console.log('ubot-bersih jalan. Ketik .help di Saved Messages.');
 await new Promise(() => {}); // tahan proses tetap hidup (GramJS tidak punya runUntilDisconnected)
