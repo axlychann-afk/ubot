@@ -123,19 +123,22 @@ async function handleBroadcast(cmd, arg, msg) {
     return;
   }
   // .bc <teks> — HANYA ke grup yang di-allow. Kalau reply media, media ikut + caption.
-  if (!arg && !msg.replyToMsgId) { await reply(msg, 'pakai: .bc <teks promosi>\natau reply foto/video lalu .bc <caption>'); return; }
-  const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
-  if (!groups.length) { await reply(msg, 'belum ada grup di-allow.\nKetik /start di grup target (sunyi, otomatis masuk list), atau .allow <nomor>.'); return; }
+  // Kalau reply pesan TEKS (tanpa media) dan tanpa arg, pakai teks reply-nya.
   let fwd = null;
   if (msg.replyToMsgId) {
     try { fwd = await msg.getReplyMessage(); } catch {}
   }
+  const promoText = arg || (fwd && !fwd.media ? (fwd.text || '') : '');
+  if (!promoText && !(fwd && fwd.media)) { await reply(msg, 'pakai: .bc <teks promosi>\natau reply foto/video lalu .bc <caption>'); return; }
+  const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
+  if (!groups.length) { await reply(msg, 'belum ada grup di-allow.\nKetik /start di grup target (sunyi, otomatis masuk list), atau .allow <nomor>.'); return; }
   let ok = 0, fail = 0;
   const status = await client.sendMessage(msg.chatId, { message: `siaran ke ${groups.length} grup...` });
   for (const g of groups) {
     try {
-      if (fwd && fwd.media) await client.sendFile(g.id, { file: fwd.media, caption: arg || fwd.text || '' });
-      else await client.sendMessage(g.id, { message: arg });
+      // arg/promoText dikirim MENTAH — spasi & baris baru utuh, dipecah via sendLong biar aman.
+      if (fwd && fwd.media) await client.sendFile(g.id, { file: fwd.media, caption: promoText || fwd.text || '' });
+      else await sendLong(g.id, promoText);
       ok++;
     } catch (e) {
       fail++;
@@ -165,8 +168,12 @@ client.addEventHandler(async (event) => {
     return;
   }
   if (!text.startsWith(PREFIX)) return;
-  const [cmd, ...rest] = text.slice(PREFIX.length).split(/\s+/);
-  const arg = rest.join(' ');
+  // JANGAN pakai split(/\s+/)+join(' ') buat arg — itu yang bikin
+  // spasi ganda & baris baru (enter) ancur/gabung. Ambil mentah.
+  const withoutPrefix = text.slice(PREFIX.length);
+  const sp = withoutPrefix.search(/\s/);
+  const cmd = sp === -1 ? withoutPrefix : withoutPrefix.slice(0, sp);
+  const arg = sp === -1 ? '' : withoutPrefix.slice(sp + 1).replace(/^\s+/, '');
 
   if (cmd === 'ping') {
     const t0 = Date.now();
