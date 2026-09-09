@@ -350,9 +350,8 @@ client.addEventHandler(async (event) => {
   if (Date.now() - cfg.lastBc < AUTOBC_COOLDOWN) return;
   counts[gid] = 0; saveAutobcCounts(counts); // reset pemicu biar ngitung ulang
   cfg.lastBc = Date.now(); saveAutobcCfg(cfg);
-  const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
-  if (!groups.length) return;
-  await firePromo(groups, promo);
+  // CUMA grup pemicu yang dikirimi — grup lain gak diganggu.
+  await firePromo([{ id: gid }], promo);
 }, new NewMessage({ incoming: true }));
 
 console.log('ubot-bersih jalan. Ketik .help di Saved Messages.');
