@@ -168,7 +168,11 @@ function looksHtml(t) {
 // (>4000 char) tetap dikirim utuh — Telegram yang akan menolak, jadi
 // jangan bikin tabel selebar itu.
 async function sendLongHtml(chatId, text, replyTo) {
-  const lines = String(text).split('\n');
+  text = String(text);
+  // Muat 1 pesan? Kirim UTUH — jangan dipecah sama sekali.
+  if (text.length <= 3500) {
+    return await client.sendMessage(chatId, { message: text, parseMode: 'html', replyTo });
+  }  const lines = String(text).split('\n');
   const chunks = [];
   let cur = '', inPre = false;
   const push = () => { if (cur) { chunks.push(cur); cur = ''; } };
