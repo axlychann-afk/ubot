@@ -118,13 +118,19 @@ const AUTOBC_FLOOR = 30 * 1000; // jeda GLOBAL antar kiriman (anti-burst kena li
 async function firePromo(groups, promoText) {
   let ok = 0, fail = 0;
   const hasMedia = _e('./promo_media');
+  const useHtml = looksHtml(promoText);
   const CAP = 1024; // batas caption Telegram — sisa teks dikirim nyusul biar gak MESSAGE_TOO_LONG
   for (const g of groups) {
     try {
       if (hasMedia) {
-        await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP) });
-        if (promoText.length > CAP) await sendLong(g.id, promoText.slice(CAP));
+        if (useHtml) await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP), parseMode: 'html' });
+        else await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP) });
+        if (promoText.length > CAP) {
+          if (useHtml) await sendLongHtml(g.id, promoText.slice(CAP));
+          else await sendLong(g.id, promoText.slice(CAP));
+        }
       }
+      else if (useHtml) await sendLongHtml(g.id, promoText);
       else await sendLong(g.id, promoText);
       ok++;
     } catch (e) {
@@ -145,6 +151,37 @@ async function sendLong(chatId, text, replyTo) {
   let first = null;
   for (const c of chunks) {
     first = await client.sendMessage(chatId, { message: c, replyTo: replyTo && !first ? replyTo : undefined });
+    if (chunks.length > 1) await sleep(800);
+  }
+  return first;
+}
+
+// ---- HTML MODE (buat promo keren: <b> <i> <u> <s> <code> <pre> <a href>) ----
+// GramJS dukung parseMode PER-PESAN, jadi cuma promo yang di-render HTML.
+// Perintah lain tidak kesenggol (help yang ada <nomor> tetap aman).
+function looksHtml(t) {
+  return /<(b|i|u|s|code|pre|a)(\s|>|\/)/i.test(t || '');
+}
+
+// Pecah per baris, tapi JANGAN belah blok <pre>...</pre> (tabel monospace
+// harus utuh, kalau kebelah tampilannya miring). Satu blok <pre> raksasa
+// (>4000 char) tetap dikirim utuh — Telegram yang akan menolak, jadi
+// jangan bikin tabel selebar itu.
+async function sendLongHtml(chatId, text, replyTo) {
+  const lines = String(text).split('\n');
+  const chunks = [];
+  let cur = '', inPre = false;
+  const push = () => { if (cur) { chunks.push(cur); cur = ''; } };
+  for (const ln of lines) {
+    if (/<pre[\s>]/i.test(ln)) inPre = true;
+    if (!inPre && cur && (cur.length + 1 + ln.length) > 3500) push();
+    cur = cur ? cur + '\n' + ln : ln;
+    if (/<\/pre>/i.test(ln)) { inPre = false; push(); }
+  }
+  push();
+  let first = null;
+  for (const c of chunks) {
+    first = await client.sendMessage(chatId, { message: c, parseMode: 'html', replyTo: replyTo && !first ? replyTo : undefined });
     if (chunks.length > 1) await sleep(800);
   }
   return first;
@@ -202,20 +239,29 @@ async function handleBroadcast(cmd, arg, msg) {
   }
   // .bc <teks> — HANYA ke grup yang di-allow. Kalau reply media, media ikut + caption.
   // Kalau reply pesan TEKS (tanpa media) dan tanpa arg, pakai teks reply-nya.
+  // .bchtml = sama kayak .bc tapi teks di-render sebagai HTML.
+  // HTML juga OTOMATIS kepakai kalau teksnya mengandung tag (<b> <i> <pre> ...),
+  // jadi promo dari .setpromo/autobc yang ada tag-nya ikut ke-render.
   let fwd = null;
   if (msg.replyToMsgId) {
     try { fwd = await msg.getReplyMessage(); } catch {}
   }
   const promoText = arg || (fwd && !fwd.media ? (fwd.text || '') : '');
-  if (!promoText && !(fwd && fwd.media)) { await reply(msg, 'pakai: .bc <teks promosi>\natau reply foto/video lalu .bc <caption>'); return; }
+  if (!promoText && !(fwd && fwd.media)) { await reply(msg, 'pakai: .bc <teks promosi>\n.bchtml <teks> = versi HTML (<b> <i> <code> <pre>)\natau reply foto/video lalu .bc <caption>'); return; }
   const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
   if (!groups.length) { await reply(msg, 'belum ada grup di-allow.\nKetik /start di grup target (sunyi, otomatis masuk list), atau .allow <nomor>.'); return; }
+  const useHtml = (cmd === 'bchtml') || looksHtml(promoText) || looksHtml(fwd && fwd.text);
   let ok = 0, fail = 0;
   const status = await client.sendMessage(msg.chatId, { message: `siaran ke ${groups.length} grup...` });
   for (const g of groups) {
     try {
       // arg/promoText dikirim MENTAH — spasi & baris baru utuh, dipecah via sendLong biar aman.
-      if (fwd && fwd.media) await client.sendFile(g.id, { file: fwd.media, caption: promoText || fwd.text || '' });
+      if (fwd && fwd.media) {
+        const cap = promoText || fwd.text || '';
+        if (useHtml) await client.sendFile(g.id, { file: fwd.media, caption: cap, parseMode: 'html' });
+        else await client.sendFile(g.id, { file: fwd.media, caption: cap });
+      }
+      else if (useHtml) await sendLongHtml(g.id, promoText);
       else await sendLong(g.id, promoText);
       ok++;
     } catch (e) {
@@ -269,6 +315,8 @@ client.addEventHandler(async (event) => {
       '.allow <nomor> / .deny <nomor> — atur target (atau /start di grup, sunyi)\n' +
       '.denyall — kosongkan allowlist (target = 0)\n' +
        '.bc <teks> — broadcast HANYA ke yang di-allow\n' +
+       '.bchtml <teks> — broadcast + render HTML (<b> <i> <code> <pre>)\n' +
+       '.testhtml [teks] — tes render HTML di chat ini\n' +
        '.setpromo <teks> — simpan teks autobc (atau reply media)\n' +
        '.autobc on/off — nyala/mati siaran otomatis\n' +
        '.setlimit <n> — batas chat pemicu (default 100)\n' +
@@ -291,7 +339,7 @@ client.addEventHandler(async (event) => {
     try {
       await client.invoke(new (await import('telegram/tl/index.js')).Api.channels.LeaveChannel({ channel: msg.chatId }));
     } catch (e) { await reply(msg, `gagal leave: ${e.message}`); }
-  } else if (cmd === 'gclist' || cmd === 'allow' || cmd === 'deny' || cmd === 'denyall' || cmd === 'blockall' || cmd === 'bcblock' || cmd === 'bcunblock' || cmd === 'bc') {
+  } else if (cmd === 'gclist' || cmd === 'allow' || cmd === 'deny' || cmd === 'denyall' || cmd === 'blockall' || cmd === 'bcblock' || cmd === 'bcunblock' || cmd === 'bc' || cmd === 'bchtml') {
     await handleBroadcast(cmd, arg, msg);
   } else if (cmd === 'setpromo') {
     // .setpromo <teks> — simpan; kalau reply media, medianya ikut disimpan.
@@ -308,7 +356,7 @@ client.addEventHandler(async (event) => {
     }
     if (!promoText && !(fwd && fwd.media)) { await reply(msg, 'pakai: .setpromo <teks promosi>\natau reply foto/video lalu .setpromo <caption>'); return; }
     _w('./promo.txt', promoText);
-    await reply(msg, `promo tersimpan (${promoText.length} char${(fwd && fwd.media) ? ' + media' : ''}).\nNyalakan: .autobc on`);
+    await reply(msg, `promo tersimpan (${promoText.length} char${(fwd && fwd.media) ? ' + media' : ''}).${looksHtml(promoText) ? '\nHTML terdeteksi ✅ bakal ke-render pas siaran.' : ''}\nNyalakan: .autobc on`);
   } else if (cmd === 'autobc') {
     const c = autobcCfg();
     const v = (arg || '').toLowerCase();
@@ -364,8 +412,21 @@ client.addEventHandler(async (event) => {
       await sleep(800);
     }
     if (!dlines.length) await reply(msg, 'allowlist kosong.');
-  } else if (cmd === 'tagall') {
-    if (!msg.chatId) { await reply(msg, 'cuma bisa di grup.'); return; }
+  } else if (cmd === 'testhtml') {
+    // kirim contoh render HTML ke chat ini — buat ngetes sebelum siaran.
+    // .testhtml = contoh default, .testhtml <teks> = render teks sendiri.
+    const demo = arg ||
+      `<b>CONTOH PROMO — HTML NYALA ✅</b>\n\n` +
+      `Ini <b>tebal</b>, ini <i>miring</i>, ini <u>garis bawah</u>, ini <s>coret</s>.\n` +
+      `Ini <code>monospace pendek</code> dan <a href="https://t.me">link contoh</a>.\n\n` +
+      `<pre>┌──────────┬───────┐\n│  PAKET   │ HARGA │\n├──────────┼───────┤\n│   1 GB   │  1K   │\n│ UNLIMIT  │  15K  │\n└──────────┴───────┘</pre>\n\n` +
+      `☑️ tabel lurus = <pre> utuh\n☑️ &amp; &lt; &gt; = cara tulis & < > biasa`;
+    try {
+      await sendLongHtml(msg.chatId, demo, msg.id);
+    } catch (e) {
+      await reply(msg, `HTML gagal render: ${e.message}\nBiasanya ada tag kepotong / & < > yang lupa di-escape.`);
+    }
+  } else if (cmd === 'tagall') {    if (!msg.chatId) { await reply(msg, 'cuma bisa di grup.'); return; }
     try {
       const parts = [];
       for await (const u of client.iterParticipants(msg.chatId, { limit: 60 })) {
