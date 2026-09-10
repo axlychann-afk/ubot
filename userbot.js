@@ -8,6 +8,7 @@
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
+import { Button } from 'telegram/tl/custom/button.js';
 import input from 'input';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
@@ -119,19 +120,20 @@ async function firePromo(groups, promoText) {
   let ok = 0, fail = 0;
   const hasMedia = _e('./promo_media');
   const useHtml = looksHtml(promoText);
+  const btns = buildBtns();
   const CAP = 1024; // batas caption Telegram — sisa teks dikirim nyusul biar gak MESSAGE_TOO_LONG
   for (const g of groups) {
     try {
       if (hasMedia) {
-        if (useHtml) await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP), parseMode: 'html' });
-        else await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP) });
+        if (useHtml) await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP), parseMode: 'html', buttons: btns });
+        else await client.sendFile(g.id, { file: './promo_media', caption: promoText.slice(0, CAP), buttons: btns });
         if (promoText.length > CAP) {
           if (useHtml) await sendLongHtml(g.id, promoText.slice(CAP));
           else await sendLong(g.id, promoText.slice(CAP));
         }
       }
-      else if (useHtml) await sendLongHtml(g.id, promoText);
-      else await sendLong(g.id, promoText);
+      else if (useHtml) await sendLongHtml(g.id, promoText, undefined, btns);
+      else await sendLong(g.id, promoText, undefined, btns);
       ok++;
     } catch (e) {
       fail++;
@@ -146,11 +148,12 @@ async function firePromo(groups, promoText) {
 }
 
 // Kirim teks panjang dengan cara dipecah per 3500 karakter (batas aman Telegram).
-async function sendLong(chatId, text, replyTo) {
+// buttons (tombol inline) cuma ditempel di pesan PERTAMA biar gak dobel.
+async function sendLong(chatId, text, replyTo, buttons) {
   const chunks = text.match(/[\s\S]{1,3500}/g) || [text];
   let first = null;
   for (const c of chunks) {
-    first = await client.sendMessage(chatId, { message: c, replyTo: replyTo && !first ? replyTo : undefined });
+    first = await client.sendMessage(chatId, { message: c, replyTo: replyTo && !first ? replyTo : undefined, buttons: !first ? buttons : undefined });
     if (chunks.length > 1) await sleep(800);
   }
   return first;
@@ -167,11 +170,11 @@ function looksHtml(t) {
 // harus utuh, kalau kebelah tampilannya miring). Satu blok <pre> raksasa
 // (>4000 char) tetap dikirim utuh — Telegram yang akan menolak, jadi
 // jangan bikin tabel selebar itu.
-async function sendLongHtml(chatId, text, replyTo) {
+async function sendLongHtml(chatId, text, replyTo, buttons) {
   text = String(text);
   // Muat 1 pesan? Kirim UTUH — jangan dipecah sama sekali.
   if (text.length <= 3500) {
-    return await client.sendMessage(chatId, { message: text, parseMode: 'html', replyTo });
+    return await client.sendMessage(chatId, { message: text, parseMode: 'html', replyTo, buttons });
   }  const lines = String(text).split('\n');
   const chunks = [];
   let cur = '', inPre = false;
@@ -185,10 +188,23 @@ async function sendLongHtml(chatId, text, replyTo) {
   push();
   let first = null;
   for (const c of chunks) {
-    first = await client.sendMessage(chatId, { message: c, parseMode: 'html', replyTo: replyTo && !first ? replyTo : undefined });
+    first = await client.sendMessage(chatId, { message: c, parseMode: 'html', replyTo: replyTo && !first ? replyTo : undefined, buttons: !first ? buttons : undefined });
     if (chunks.length > 1) await sleep(800);
   }
   return first;
+}
+
+// ---- TOMBOL INLINE PROMO (tanam di kode, tanpa command) ----
+// Nempel OTOMATIS di .bc/.bchtml/autobc (pesan pertama).
+// Ganti teks/link di sini kalau mau ubah tombol.
+const HARD_BTNS = [
+  { text: '🛒 Order Sekarang', url: 'https://t.me/vpsnatbuys_bot' },
+  { text: '⭐ Cek Testimoni', url: 'https://t.me/testimonialnat' },
+];
+function buildBtns() {
+  const cfg = HARD_BTNS.filter((b) => b && b.text && /^https?:\/\//i.test(b.url || '')).slice(0, 4);
+  if (!cfg.length) return undefined;
+  return [cfg.map((b) => Button.url(String(b.text).slice(0, 40), String(b.url)))];
 }
 
 async function myGroups() {
@@ -255,6 +271,7 @@ async function handleBroadcast(cmd, arg, msg) {
   const groups = (await myGroups()).filter((g) => allowIds().has(g.id));
   if (!groups.length) { await reply(msg, 'belum ada grup di-allow.\nKetik /start di grup target (sunyi, otomatis masuk list), atau .allow <nomor>.'); return; }
   const useHtml = (cmd === 'bchtml') || looksHtml(promoText) || looksHtml(fwd && fwd.text);
+  const btns = buildBtns();
   let ok = 0, fail = 0;
   const status = await client.sendMessage(msg.chatId, { message: `siaran ke ${groups.length} grup...` });
   for (const g of groups) {
@@ -262,11 +279,11 @@ async function handleBroadcast(cmd, arg, msg) {
       // arg/promoText dikirim MENTAH — spasi & baris baru utuh, dipecah via sendLong biar aman.
       if (fwd && fwd.media) {
         const cap = promoText || fwd.text || '';
-        if (useHtml) await client.sendFile(g.id, { file: fwd.media, caption: cap, parseMode: 'html' });
-        else await client.sendFile(g.id, { file: fwd.media, caption: cap });
+        if (useHtml) await client.sendFile(g.id, { file: fwd.media, caption: cap, parseMode: 'html', buttons: btns });
+        else await client.sendFile(g.id, { file: fwd.media, caption: cap, buttons: btns });
       }
-      else if (useHtml) await sendLongHtml(g.id, promoText);
-      else await sendLong(g.id, promoText);
+      else if (useHtml) await sendLongHtml(g.id, promoText, undefined, btns);
+      else await sendLong(g.id, promoText, undefined, btns);
       ok++;
     } catch (e) {
       fail++;
@@ -419,6 +436,7 @@ client.addEventHandler(async (event) => {
   } else if (cmd === 'testhtml') {
     // kirim contoh render HTML ke chat ini — buat ngetes sebelum siaran.
     // .testhtml = contoh default, .testhtml <teks> = render teks sendiri.
+    // Tombol .setbtn ikut ditempel biar preview-nya persis kayak siaran.
     const demo = arg ||
       `<b>CONTOH PROMO — HTML NYALA ✅</b>\n\n` +
       `Ini <b>tebal</b>, ini <i>miring</i>, ini <u>garis bawah</u>, ini <s>coret</s>.\n` +
@@ -426,7 +444,7 @@ client.addEventHandler(async (event) => {
       `<pre>┌──────────┬───────┐\n│  PAKET   │ HARGA │\n├──────────┼───────┤\n│   1 GB   │  1K   │\n│ UNLIMIT  │  15K  │\n└──────────┴───────┘</pre>\n\n` +
       `☑️ tabel lurus = <pre> utuh\n☑️ &amp; &lt; &gt; = cara tulis & < > biasa`;
     try {
-      await sendLongHtml(msg.chatId, demo, msg.id);
+      await sendLongHtml(msg.chatId, demo, msg.id, buildBtns());
     } catch (e) {
       await reply(msg, `HTML gagal render: ${e.message}\nBiasanya ada tag kepotong / & < > yang lupa di-escape.`);
     }
