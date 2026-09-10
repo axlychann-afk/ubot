@@ -338,6 +338,8 @@ client.addEventHandler(async (event) => {
        '.bc <teks> — broadcast HANYA ke yang di-allow\n' +
        '.bchtml <teks> — broadcast + render HTML (<b> <i> <code> <pre>)\n' +
        '.testhtml [teks] — tes render HTML di chat ini\n' +
+       '.testbtn — panggil tombol promo doang\n' +
+       '.btn — sama kayak .testbtn (nama pendek)\n' +
        '.setpromo <teks> — simpan teks autobc (atau reply media)\n' +
        '.autobc on/off — nyala/mati siaran otomatis\n' +
        '.setlimit <n> — batas chat pemicu (default 100)\n' +
@@ -433,6 +435,13 @@ client.addEventHandler(async (event) => {
       await sleep(800);
     }
     if (!dlines.length) await reply(msg, 'allowlist kosong.');
+  } else if (cmd === 'testbtn' || cmd === 'btn') {
+    // PANGGIL BUTTON — manggil tombol promo doang ke chat ini.
+    // Blok pemanggilnya di sini (router perintah, bukan bawah file,
+    // karena bawah file cuma ada penahan proses yang gak jalanin apa-apa).
+    const btns = buildBtns();
+    if (!btns) { await reply(msg, 'tombol kosong (HARD_BTNS di kode kosong).'); return; }
+    await client.sendMessage(msg.chatId, { message: 'tombol promo 👇', buttons: btns });
   } else if (cmd === 'testhtml') {
     // kirim contoh render HTML ke chat ini — buat ngetes sebelum siaran.
     // .testhtml = contoh default, .testhtml <teks> = render teks sendiri.
